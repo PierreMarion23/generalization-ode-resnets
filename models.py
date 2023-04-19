@@ -27,7 +27,6 @@ def create_linear_layers_rbf(
     return nn.Sequential(*layers)
 
 
-
 def create_linear_layer(
         in_features: int, out_features:int, bias: bool = True) -> nn.Linear:
     """Initialize one linear layer with a normal distribution of
@@ -70,10 +69,13 @@ class ResNet(pl.LightningModule):
             self.initial_width, self.width, bias=False)
         self.final = create_linear_layer(
             self.width, self.final_width, bias=False)
+        if not model_config['train_init_final']:
+            self.init.weight.requires_grad = False
+            self.final.weight.requires_grad = False
         self.outer_weights = create_linear_layers_rbf(
                 self.depth, self.width, model_config['rbf_bandwidth'])
 
-        self.loss = nn.CrossEntropyLoss()
+        self.loss = getattr(nn, model_config['loss'])()
 
     def forward_hidden_state(self, hidden_state: torch.Tensor) -> torch.Tensor:
         """Function that outputs the last hidden state, useful to compare norms
@@ -95,7 +97,7 @@ class ResNet(pl.LightningModule):
         self.train()
         data, target = batch
         logits = self(data)
-        loss = self.loss(logits, target)
+        loss = self.loss(logits, nn.functional.one_hot(target).type(torch.float))
         self.log("train/loss", loss, on_step=False, on_epoch=True)
         return loss
 

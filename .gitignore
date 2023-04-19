@@ -5,3 +5,5 @@ datasets/
 figures/
 results/
 lightning_logs/
+*.txt
+*.ipynb

@@ -1,6 +1,7 @@
 import numpy as np
 import pytorch_lightning as pl
 import torch
+from torch import nn
 
 
 def get_prediction(data, model: pl.LightningModule, device):
@@ -28,7 +29,8 @@ def get_eval_loss(test_dl, model, device):
     for n, batch in enumerate(test_dl):
         data, target = batch
         logits = model(data.to(device))
-        loss += model.loss(logits, target.to(device))
+        one_hot_targets = nn.functional.one_hot(target.to(device)).type(torch.float)
+        loss += model.loss(logits, one_hot_targets)
     return loss / n
 
 
