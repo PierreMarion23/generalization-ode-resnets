@@ -63,8 +63,11 @@ class ResNet(pl.LightningModule):
         self.width = model_config['width']
         self.depth = model_config['depth']
         self.activation = getattr(nn, model_config['activation'])()
+        if 'lambda_lip' in model_config:
+            self.lambda_lip =  model_config['lambda_lip']
+        else:
+            self.lambda_lip = 0
 
-        # Uniform initialization on [-sqrt(3/width), sqrt(3/width)]
         self.init = create_linear_layer(
             self.initial_width, self.width, bias=False)
         self.final = create_linear_layer(
@@ -77,29 +80,30 @@ class ResNet(pl.LightningModule):
 
         self.loss = getattr(nn, model_config['loss'])()
 
-    def forward_hidden_state(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        """Function that outputs the last hidden state, useful to compare norms
+    def compute_lipschitz_norm(self):
+        """Computes the Lipschitz constant of the weights."""
+        weights = torch.vstack([layer.weight.flatten() for layer in self.outer_weights])
+        return torch.norm(weights[1:] - weights[:-1])
 
-        :param hidden_state: output of the initial layer
-        :return: output of the last hidden layer
-        """
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Computes the forward pass."""
+        hidden_state = self.init(x)
         for k in range(self.depth):
             hidden_state = hidden_state + \
                            self.outer_weights[k](self.activation(hidden_state)) / float(self.depth)
-        return hidden_state
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        hidden_state = self.init(x)
-        hidden_state = self.forward_hidden_state(hidden_state)
         return self.final(hidden_state)
 
     def training_step(self, batch, batch_no):
+        """Computes the training loss for one batch."""
         self.train()
         data, target = batch
         logits = self(data)
         loss = self.loss(logits, nn.functional.one_hot(target).type(torch.float))
         self.log("train/loss", loss, on_step=False, on_epoch=True)
-        return loss
+        penalization = 0
+        if self.lambda_lip > 0:
+            penalization += self.lambda_lip * self.compute_lipschitz_norm()
+        return loss + penalization
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(

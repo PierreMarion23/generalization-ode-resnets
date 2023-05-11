@@ -1,9 +1,7 @@
-import copy
 import glob
 import os
 import pickle
 import time
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -11,7 +9,6 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning import loggers
 import torch
-from torch.multiprocessing import Pool
 
 import data
 import models
@@ -19,22 +16,18 @@ import utils
 
 
 class SaveWeightMetrics(Callback):
+    """Save metrics during training."""
+
     def __init__(self, test_dl, device):
         self.epoch_counter = -1
         self.first_batch = True
         self.test_dl = test_dl
         self.device = device
 
-    def compute_max_norm(self, weights):
-        return torch.max(torch.Tensor([torch.sum(torch.abs(weights[k])) for k in range(len(weights))]))
-
     def compute_lipschitz_norm(self, weights):
         return torch.max(torch.stack([weights[k+1] - weights[k] for k in range(len(weights)-1)]))
     
     def save_metrics(self, resnet):
-        max_norm = self.compute_max_norm([layer.weight for layer in resnet.outer_weights])
-        resnet.logger.log_metrics(
-            {"max_norm": max_norm, "epoch": self.epoch_counter})
         lipschitz_norm = self.compute_lipschitz_norm([layer.weight for layer in resnet.outer_weights])
         resnet.logger.log_metrics(
             {"lipschitz_norm": lipschitz_norm, "epoch": self.epoch_counter})
@@ -45,16 +38,18 @@ class SaveWeightMetrics(Callback):
         resnet.logger.log_metrics({"test/loss": loss, "epoch": self.epoch_counter})
         
     def on_train_batch_end(self, trainer, resnet, outputs, batch, batch_idx):
+        """Compute train loss before training (loss of the first batch of the first epoch)."""
         if self.first_batch:
             resnet.logger.log_metrics({"train/loss": outputs['loss'], "epoch": -1})
             self.first_batch = False
         
     def on_train_epoch_start(self, trainer, resnet):
+        """Compute metrics before training (epoch=-1)."""
         if self.epoch_counter == -1:
             self.save_metrics(resnet)
-            
 
     def on_train_epoch_end(self, trainer, resnet):
+        """Compute metrics after each epoch."""
         self.epoch_counter += 1
         self.save_metrics(resnet)
 
@@ -65,15 +60,17 @@ def get_results(exp_name: str) -> list:
     :param exp_name: name of the configuration
     :return: list of results
     """
-    results = {'accuracy': [], 'rbf_bandwidth': [], 'lr': [], 'dataset': [], 'activation': [], 'width': [], 'depth': [], 'train_init_final': [], 'epoch': [], 'max_norm': [], 'lipschitz_norm': [], 'train_loss': [], 'test_loss': [], 'test_accuracy': []}
+    results = {'rbf_bandwidth': [], 'lr': [], 'dataset': [], 'activation': [], 
+               'width': [], 'depth': [], 'train_init_final': [], 'lambda': [], 
+               'epoch': [], 'lipschitz_norm': [], 'train_loss': [], 
+               'test_loss': [], 'test_accuracy': []}
+    # for loop over all runs.
     for directory in glob.glob(os.path.join('results', exp_name, '*')):
         with open(os.path.join(directory, 'metrics.csv'), 'r') as f:
             csv_log = pd.read_csv(f)
         with open(os.path.join(directory, 'config.pkl'), 'rb') as f:
             config = pickle.load(f)
-        with open(os.path.join(directory, 'metrics.pkl'), 'rb') as f:    # useless?
-            metrics = pickle.load(f)
-        for epoch in range(-1, config['epochs']):
+        for epoch in range(-1, config['epochs']):   # epoch=-1 <-> before training.
             results['rbf_bandwidth'].append(
                 config['model-config']['rbf_bandwidth'])
             results['lr'].append(config['model-config']['lr'])
@@ -82,17 +79,19 @@ def get_results(exp_name: str) -> list:
             results['width'].append(config['model-config']['width'])
             results['depth'].append(config['model-config']['depth'])
             results['train_init_final'].append(config['model-config']['train_init_final'])
-            results['accuracy'].append(metrics['test_accuracy'])
-            results['epoch'].append(epoch + 1)
-            results['max_norm'].append(float(csv_log[csv_log['max_norm'].notnull() & (csv_log['epoch']==epoch)]['max_norm']))
-            results['lipschitz_norm'].append(float(csv_log[csv_log['lipschitz_norm'].notnull() & (csv_log['epoch']==epoch)]['lipschitz_norm']))
-            results['train_loss'].append(float(csv_log[csv_log['train/loss'].notnull() & (csv_log['epoch']==epoch)]['train/loss']))
-            if epoch >= 0:
-                results['test_loss'].append(float(csv_log[csv_log['test/loss'].notnull() & (csv_log['epoch']==epoch)]['test/loss']))
-                results['test_accuracy'].append(float(csv_log[csv_log['test/accuracy'].notnull() & (csv_log['epoch']==epoch)]['test/accuracy']))
+            if 'lambda_lip' in config['model-config']:
+                results['lambda'].append(config['model-config']['lambda_lip'])
             else:
-                results['test_loss'].append(-1.)
-                results['test_accuracy'].append(-1.)
+                results['lambda'].append(0)
+            results['epoch'].append(epoch + 1)   # index offset.
+            results['lipschitz_norm'].append(
+                float(csv_log[csv_log['lipschitz_norm'].notnull() & (csv_log['epoch']==epoch)]['lipschitz_norm']))
+            results['train_loss'].append(
+                float(csv_log[csv_log['train/loss'].notnull() & (csv_log['epoch']==epoch)]['train/loss']))
+            results['test_loss'].append(
+                    float(csv_log[csv_log['test/loss'].notnull() & (csv_log['epoch']==epoch)]['test/loss']))
+            results['test_accuracy'].append(
+                    float(csv_log[csv_log['test/accuracy'].notnull() & (csv_log['epoch']==epoch)]['test/accuracy']))
 
     return results
 
@@ -133,20 +132,8 @@ def fit(config_dict: dict, verbose: bool = False) -> pl.LightningModule:
     trainer.fit(model, train_dl)
 
     print('Training finished')
-
-    # useless? Since it's already done in the callback.
-    true_targets, predictions = utils.get_true_targets_predictions(
-        test_dl, model, device)
-    accuracy = np.mean(np.array(true_targets) == np.array(predictions))
-    loss = utils.get_eval_loss(test_dl, model, device)
-
-    metrics = {'test_accuracy': accuracy, 'test_loss': loss}
-    if verbose:
-        print(f'Test accuracy: {accuracy}')
+    
     trainer.save_checkpoint(f'{results_dir}/model.ckpt')
-
-    with open(f'{results_dir}/metrics.pkl', 'wb') as f:
-        pickle.dump(metrics, f)
 
     with open(f'{results_dir}/config.pkl', 'wb') as f:
         pickle.dump(config_dict, f)

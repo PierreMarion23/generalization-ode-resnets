@@ -16,6 +16,14 @@ class ReshapeTransform:
 
 
 def load_dataset(name, vectorize):
+    """Load a dataset from torchvision.
+
+    :param name: configuration of the network and dataset
+    :param vectorize: if True, vectorizes the image matrix
+    :return: train dataloader, test dataloader, 
+             dimension of the (first axis of the) data, 
+             number of classes
+    """
     if vectorize:
         transform_img_to_vect = transforms.Compose([transforms.ToTensor(), ReshapeTransform((-1,))])
     else:
