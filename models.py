@@ -67,6 +67,14 @@ class ResNet(pl.LightningModule):
             self.lambda_lip =  model_config['lambda_lip']
         else:
             self.lambda_lip = 0
+        if 'lambda_max_max' in model_config:
+            self.lambda_max_max =  model_config['lambda_max_max']
+        else:
+            self.lambda_max_max = 0
+        if 'lambda_two_max' in model_config:
+            self.lambda_two_max =  model_config['lambda_two_max']
+        else:
+            self.lambda_two_max = 0
 
         self.init = create_linear_layer(
             self.initial_width, self.width, bias=False)
@@ -84,6 +92,16 @@ class ResNet(pl.LightningModule):
         """Computes the Lipschitz constant of the weights."""
         weights = torch.vstack([layer.weight.flatten() for layer in self.outer_weights])
         return torch.norm(weights[1:] - weights[:-1])
+    
+    def compute_max_max_lipschitz_norm(self):
+        """Computes the Lipschitz constant of the weights."""
+        weights = torch.vstack([layer.weight.flatten() for layer in self.outer_weights])
+        return torch.max(weights[1:] - weights[:-1])
+    
+    def compute_two_max_lipschitz_norm(self):
+        """Computes the Lipschitz constant of the weights."""
+        weights = torch.vstack([layer.weight.flatten() for layer in self.outer_weights])
+        return torch.norm(torch.max(weights[1:] - weights[:-1], dim=1).values)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Computes the forward pass."""
@@ -103,7 +121,66 @@ class ResNet(pl.LightningModule):
         penalization = 0
         if self.lambda_lip > 0:
             penalization += self.lambda_lip * self.compute_lipschitz_norm()
+        if self.lambda_max_max > 0:
+            penalization += self.lambda_max_max * self.compute_max_max_lipschitz_norm()
+        if self.lambda_two_max > 0:
+            penalization += self.lambda_two_max * self.compute_two_max_lipschitz_norm()
         return loss + penalization
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.parameters()),
+            lr=self.model_config['lr'])
+        return {"optimizer": optimizer}
+
+
+
+class TiedResNet(pl.LightningModule):
+    def __init__(self, first_coord: int, final_width:int,
+                 **model_config: dict):
+        """Tied residual neural network
+
+        :param first_coord: size of the input data
+        :param final_width: size of the output
+        :param model_config: configuration dictionary with hyperparameters
+        """
+        super().__init__()
+
+        self.initial_width = first_coord
+        self.final_width = final_width
+        self.model_config = model_config
+        self.width = model_config['width']
+        self.depth = model_config['depth']
+        self.activation = getattr(nn, model_config['activation'])()
+
+        self.init = create_linear_layer(
+            self.initial_width, self.width, bias=False)
+        self.final = create_linear_layer(
+            self.width, self.final_width, bias=False)
+        if not model_config['train_init_final']:
+            self.init.weight.requires_grad = False
+            self.final.weight.requires_grad = False
+        self.outer_weights = create_linear_layer(
+            self.width, self.width, bias=False)
+
+        self.loss = getattr(nn, model_config['loss'])()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Computes the forward pass."""
+        hidden_state = self.init(x)
+        for k in range(self.depth):
+            hidden_state = hidden_state + \
+                           self.outer_weights(self.activation(hidden_state)) / float(self.depth)
+        return self.final(hidden_state)
+
+    def training_step(self, batch, batch_no):
+        """Computes the training loss for one batch."""
+        self.train()
+        data, target = batch
+        logits = self(data)
+        loss = self.loss(logits, nn.functional.one_hot(target).type(torch.float))
+        self.log("train/loss", loss, on_step=False, on_epoch=True)
+        return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(

@@ -18,19 +18,21 @@ import utils
 class SaveWeightMetrics(Callback):
     """Save metrics during training."""
 
-    def __init__(self, test_dl, device):
+    def __init__(self, test_dl, device, tied=False):
         self.epoch_counter = -1
         self.first_batch = True
         self.test_dl = test_dl
         self.device = device
+        self.tied = tied
 
     def compute_lipschitz_norm(self, weights):
         return torch.max(torch.stack([weights[k+1] - weights[k] for k in range(len(weights)-1)]))
     
     def save_metrics(self, resnet):
-        lipschitz_norm = self.compute_lipschitz_norm([layer.weight for layer in resnet.outer_weights])
-        resnet.logger.log_metrics(
-            {"lipschitz_norm": lipschitz_norm, "epoch": self.epoch_counter})
+        if not self.tied:
+            lipschitz_norm = self.compute_lipschitz_norm([layer.weight for layer in resnet.outer_weights])
+            resnet.logger.log_metrics(
+                {"lipschitz_norm": lipschitz_norm, "epoch": self.epoch_counter})
         true_targets, predictions = utils.get_true_targets_predictions(self.test_dl, resnet, self.device)
         accuracy = np.mean(np.array(true_targets) == np.array(predictions))
         resnet.logger.log_metrics({"test/accuracy": accuracy, "epoch": self.epoch_counter})
@@ -54,7 +56,7 @@ class SaveWeightMetrics(Callback):
         self.save_metrics(resnet)
 
 
-def get_results(exp_name: str) -> list:
+def get_results(exp_name: str, tied: bool = False) -> list:
     """Read the results saved after execution of the training file.
 
     :param exp_name: name of the configuration
@@ -81,22 +83,29 @@ def get_results(exp_name: str) -> list:
             results['train_init_final'].append(config['model-config']['train_init_final'])
             if 'lambda_lip' in config['model-config']:
                 results['lambda'].append(config['model-config']['lambda_lip'])
+            elif 'lambda_two_max' in config['model-config']:
+                results['lambda'].append(config['model-config']['lambda_two_max'])
+            elif 'lambda_max_max' in config['model-config']:
+                results['lambda'].append(config['model-config']['lambda_max_max'])
             else:
                 results['lambda'].append(0)
             results['epoch'].append(epoch + 1)   # index offset.
-            results['lipschitz_norm'].append(
-                float(csv_log[csv_log['lipschitz_norm'].notnull() & (csv_log['epoch']==epoch)]['lipschitz_norm']))
+            if not tied:
+                results['lipschitz_norm'].append(
+                    float(csv_log[csv_log['lipschitz_norm'].notnull() & (csv_log['epoch']==epoch)]['lipschitz_norm']))
             results['train_loss'].append(
                 float(csv_log[csv_log['train/loss'].notnull() & (csv_log['epoch']==epoch)]['train/loss']))
             results['test_loss'].append(
                     float(csv_log[csv_log['test/loss'].notnull() & (csv_log['epoch']==epoch)]['test/loss']))
             results['test_accuracy'].append(
                     float(csv_log[csv_log['test/accuracy'].notnull() & (csv_log['epoch']==epoch)]['test/accuracy']))
+    if tied:
+        del results['lipschitz_norm']
 
     return results
 
 
-def fit(config_dict: dict, verbose: bool = False) -> pl.LightningModule:
+def fit(config_dict: dict, verbose: bool = False, tied: bool = False) -> pl.LightningModule:
     """Train a ResNet following the configuration.
 
     :param config_dict: configuration of the network and dataset
@@ -108,9 +117,14 @@ def fit(config_dict: dict, verbose: bool = False) -> pl.LightningModule:
     train_dl, test_dl, first_coord, nb_classes = data.load_dataset(
         config_dict['dataset'], vectorize=True)
 
-    model = models.ResNet(
+    if tied:
+        model = models.TiedResNet(
         first_coord=first_coord, final_width=nb_classes,
         **config_dict['model-config'])
+    else:
+        model = models.ResNet(
+            first_coord=first_coord, final_width=nb_classes,
+            **config_dict['model-config'])
 
     gpu = 1 if torch.cuda.is_available() else 0
     device = torch.device("cuda") if torch.cuda.is_available() \
@@ -124,7 +138,7 @@ def fit(config_dict: dict, verbose: bool = False) -> pl.LightningModule:
             gpus=gpu,
             max_epochs=config_dict['epochs'],
             logger=logger,
-            callbacks=[SaveWeightMetrics(test_dl, device)],
+            callbacks=[SaveWeightMetrics(test_dl, device, tied=tied)],
             enable_checkpointing=False,
             enable_progress_bar=verbose,
             enable_model_summary=verbose

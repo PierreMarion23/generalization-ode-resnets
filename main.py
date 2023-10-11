@@ -39,24 +39,52 @@ def plot(filepath):
     plt.xlabel(r'$\sup_{0 \leq k \leq L-1}(\|W_{k+1} - W_k\|_\infty)$')
     plt.ylabel('Generalization gap')
     plt.legend()
-    plt.savefig(os.path.join(filepath, 'figure-generalization-lipschitz.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(filepath, 'figure-generalization-lipschitz.pdf'), bbox_inches='tight')
     plt.close()
 
     df_zero_pen = pd.DataFrame.from_dict(training.get_results('weights-after-training-50-epochs-no-train-init-final'))
     df_pen_01 = pd.DataFrame.from_dict(training.get_results('penalized-lip-0.1-max-0-50-epochs-no-train-init-final'))
     df_pen_001 = pd.DataFrame.from_dict(training.get_results('penalized-lip-0.01-max-0-50-epochs-no-train-init-final'))
-    total_df = pd.concat([df_zero_pen, df_pen_01, df_pen_001])
+    df_pen_inf = pd.DataFrame.from_dict(training.get_results('weight-tied', tied=True))
+    df_pen_inf['lambda'] = r'$\infty$'
+    total_df = pd.concat([df_zero_pen, df_pen_01, df_pen_001, df_pen_inf])
+    total_df['gen_gap'] = total_df['test_loss'] - total_df['train_loss']
+
+    plt.figure()
+    sns.boxplot(data=total_df[total_df['epoch']==50], x='lambda', y='gen_gap', color='mediumseagreen', order=[0.0, 0.01, 0.1, r'$\infty$'])
+    plt.xlabel(r'$\lambda$')
+    plt.ylabel('Generalization gap')
+    plt.savefig(os.path.join(filepath, 'figure-generalization-lambda.pdf'), bbox_inches='tight')
+    plt.close()
+
+    df_zero_pen = pd.DataFrame.from_dict(training.get_results('weights-after-training-50-epochs-no-train-init-final'))
+    df_pen_01 = pd.DataFrame.from_dict(training.get_results('penalization-two-max-01'))
+    df_pen_1 = pd.DataFrame.from_dict(training.get_results('penalization-two-max-1'))
+    total_df = pd.concat([df_zero_pen, df_pen_01, df_pen_1])
     total_df['gen_gap'] = total_df['test_loss'] - total_df['train_loss']
 
     plt.figure()
     sns.boxplot(data=total_df[total_df['epoch']==50], x='lambda', y='gen_gap', color='mediumseagreen')
     plt.xlabel(r'$\lambda$')
     plt.ylabel('Generalization gap')
-    plt.savefig(os.path.join(filepath, 'figure-generalization-lambda.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(filepath, 'penalization-lambda-two-max.pdf'), bbox_inches='tight')
+    plt.close()
+
+    df_zero_pen = pd.DataFrame.from_dict(training.get_results('weights-after-training-50-epochs-no-train-init-final'))
+    df_pen_01 = pd.DataFrame.from_dict(training.get_results('penalization-max-max-1'))
+    df_pen_1 = pd.DataFrame.from_dict(training.get_results('penalization-max-max-10'))
+    total_df = pd.concat([df_zero_pen, df_pen_01, df_pen_1])
+    total_df['gen_gap'] = total_df['test_loss'] - total_df['train_loss']
+
+    plt.figure()
+    sns.boxplot(data=total_df[total_df['epoch']==50], x='lambda', y='gen_gap', color='mediumseagreen')
+    plt.xlabel(r'$\lambda$')
+    plt.ylabel('Generalization gap')
+    plt.savefig(os.path.join(filepath, 'penalization-lambda-max-max.pdf'), bbox_inches='tight')
     plt.close()
 
 
-def run_experiment(exp_config: dict):
+def run_experiment(exp_config: dict, tied: bool = False):
     """Train a model according to a given configuration.
 
     :param exp_config: configuration of the experiment
@@ -66,7 +94,7 @@ def run_experiment(exp_config: dict):
     for k in range(exp_config['n_iter']):
         print('EXPERIMENT {}'.format(exp_config['name']))
         print('ITERATION {}'.format(k))
-        training.fit(exp_config, verbose=True)
+        training.fit(exp_config, verbose=True, tied=tied)
 
 
 if __name__ == '__main__':
@@ -75,4 +103,10 @@ if __name__ == '__main__':
     run_experiment(config.weights_after_training_50_epochs_no_train_init_final)
     run_experiment(config.penalized_lip_01_max_0_50epochs_no_train_init_final)
     run_experiment(config.penalized_lip_001_max_0_50epochs_no_train_init_final)
+    run_experiment(config.penalization_two_max_01)
+    run_experiment(config.penalization_two_max_1)
+    run_experiment(config.penalization_max_max_1)
+    run_experiment(config.penalization_max_max_10)
+    run_experiment(config.weights_after_training_50_epochs_no_train_init_final_tied, tied=True)
+
     plot('figures')
